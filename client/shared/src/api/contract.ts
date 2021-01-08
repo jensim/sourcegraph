@@ -37,6 +37,15 @@ export interface FlatExtensionHostAPI {
 
     // Tree
     getFileDecorations: (parameters: FileDecorationContext) => ProxySubscribable<FileDecorationsByPath>
+
+    // Context + Contributions
+    /**
+     * Sets the given context keys and values.
+     * If a value is `null`, the context key is removed.
+     *
+     * @param update Object with context keys as values
+     */
+    updateContext: (update: { [k: string]: unknown }) => void
 }
 
 /**

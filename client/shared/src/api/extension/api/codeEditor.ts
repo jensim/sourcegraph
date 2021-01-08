@@ -53,6 +53,8 @@ export class ExtensionCodeEditor implements sourcegraph.CodeEditor {
         return this.selectionsChanges.value
     }
 
+    // TODO(tj): store decorations here
+
     public setDecorations(
         decorationType: sourcegraph.TextDocumentDecorationType | null,
         decorations: sourcegraph.TextDocumentDecoration[]
@@ -67,6 +69,8 @@ export class ExtensionCodeEditor implements sourcegraph.CodeEditor {
             decorations.map(fromTextDocumentDecoration).filter(decoration => !isDecorationEmpty(decoration))
         )
     }
+
+    // TODO(tj): Add status bar items
 
     public update(data: Pick<CodeEditorData, 'selections'>): void {
         this.selectionsChanges.next(data.selections.map(selection => Selection.fromPlain(selection)))

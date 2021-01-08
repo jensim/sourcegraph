@@ -14,10 +14,11 @@ import { fromLocation, toPosition } from './api/types'
 import { TextDocumentPositionParameters } from '../protocol'
 import { LOADING, MaybeLoadingResult } from '@sourcegraph/codeintellify'
 import { combineLatestOrDefault } from '../../util/rxjs/combineLatestOrDefault'
-import { castArray, groupBy, identity, isEqual } from 'lodash'
+import { castArray, groupBy, identity, isEqual, isMatch } from 'lodash'
 import { fromHoverMerged } from '../client/types/hover'
 import { isNot, isExactly, isDefined } from '../../util/types'
 import { validateFileDecoration } from './api/decorations'
+import { InitData } from './extensionHost'
 
 /**
  * Holds the entire state exposed to the extension host
@@ -40,6 +41,9 @@ export interface ExtensionHostState {
 
     // Decorations
     fileDecorationProviders: BehaviorSubject<sourcegraph.FileDecorationProvider[]>
+
+    // Context + Contributions
+    context: BehaviorSubject<Context>
 }
 
 export interface RegisteredProvider<T> {
@@ -60,6 +64,7 @@ export interface InitResult extends Pick<typeof sourcegraph['app'], 'registerFil
         'registerHoverProvider' | 'registerDocumentHighlightProvider' | 'registerDefinitionProvider'
     >
     graphQL: typeof sourcegraph['graphQL']
+    internal: Pick<typeof sourcegraph['internal'], 'updateContext'>
 }
 
 /**
@@ -74,6 +79,19 @@ export type PartialWorkspaceNamespace = Omit<
 export type FileDecorationsByPath = Record<string, sourcegraph.FileDecoration[] | undefined>
 
 /**
+ * Context is an arbitrary, immutable set of key-value pairs. Its value can be any JSON object.
+ *
+ * @template T If you have a value with a property of type T that is not one of the primitive types listed below
+ * (or Context), you can use Context<T> to hold that value. T must be a value that can be represented by a JSON
+ * object.
+ */
+export interface Context<T = never>
+    extends Record<
+        string,
+        string | number | boolean | null | Context<T> | T | (string | number | boolean | null | Context<T> | T)[]
+    > {}
+
+/**
  * Holds internally ExtState and manages communication with the Client
  * Returns the initialized public extension API pieces ready for consumption and the internal extension host API ready to be exposed to the main thread
  * NOTE that this function will slowly merge with the one in extensionHost.ts
@@ -82,7 +100,7 @@ export type FileDecorationsByPath = Record<string, sourcegraph.FileDecoration[] 
  */
 export const initNewExtensionAPI = (
     mainAPI: Remote<MainThreadAPI>,
-    initialSettings: Readonly<SettingsCascade<object>>,
+    { initialSettings, clientApplication }: Pick<InitData, 'initialSettings' | 'clientApplication'>,
     textDocuments: ExtensionDocuments
 ): InitResult => {
     const state: ExtensionHostState = {
@@ -96,6 +114,16 @@ export const initNewExtensionAPI = (
         ),
         definitionProviders: new BehaviorSubject<RegisteredProvider<sourcegraph.DefinitionProvider>[]>([]),
         fileDecorationProviders: new BehaviorSubject<sourcegraph.FileDecorationProvider[]>([]),
+        context: new BehaviorSubject<Context>({
+            'clientApplication.isSourcegraph': clientApplication === 'sourcegraph',
+
+            // Arbitrary, undocumented versioning for extensions that need different behavior for different
+            // Sourcegraph versions.
+            //
+            // TODO: Make this more advanced if many extensions need this (although we should try to avoid
+            // extensions needing this).
+            'clientApplication.extensionAPIVersion.major': 3,
+        }),
     }
 
     const configChanges = new BehaviorSubject<void>(undefined)
@@ -210,6 +238,9 @@ export const initNewExtensionAPI = (
                           )
                       )
             ),
+
+        // Context data + Contributions
+        updateContext,
     }
 
     // Configuration
@@ -267,6 +298,26 @@ export const initNewExtensionAPI = (
         execute: (query, variables) => mainAPI.requestGraphQL(query, variables),
     }
 
+    // Context + Contributions
+    // Same implementation is exposed to main and extensions
+    function updateContext(update: { [k: string]: unknown }): void {
+        if (isMatch(state.context.value, update)) {
+            return
+        }
+        const result: any = {}
+        for (const [key, oldValue] of Object.entries(state.context.value)) {
+            if (update[key] !== null) {
+                result[key] = oldValue
+            }
+        }
+        for (const [key, value] of Object.entries(update)) {
+            if (value !== null) {
+                result[key] = value
+            }
+        }
+        state.context.next(result)
+    }
+
     return {
         configuration: Object.assign(configChanges.asObservable(), {
             get: getConfiguration,
@@ -283,6 +334,9 @@ export const initNewExtensionAPI = (
         },
         registerFileDecorationProvider,
         graphQL,
+        internal: {
+            updateContext,
+        },
     }
 }
 

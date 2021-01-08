@@ -150,7 +150,8 @@ function createExtensionAPI(
         languages: { registerHoverProvider, registerDocumentHighlightProvider, registerDefinitionProvider },
         registerFileDecorationProvider,
         graphQL,
-    } = initNewExtensionAPI(proxy, initData.initialSettings, documents)
+        internal,
+    } = initNewExtensionAPI(proxy, initData, documents)
 
     // Expose the extension host API to the client (main thread)
     const extensionHostAPI: ExtensionHostAPI = {
