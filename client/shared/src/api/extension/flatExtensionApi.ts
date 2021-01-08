@@ -19,6 +19,9 @@ import { fromHoverMerged } from '../client/types/hover'
 import { isNot, isExactly, isDefined } from '../../util/types'
 import { validateFileDecoration } from './api/decorations'
 import { InitData } from './extensionHost'
+import { ExtensionDocument } from './api/textDocument'
+import { ReferenceCounter } from '../../util/ReferenceCounter'
+import { ExtensionCodeEditor } from './api/codeEditor'
 
 /**
  * Holds the entire state exposed to the extension host
@@ -44,6 +47,20 @@ export interface ExtensionHostState {
 
     // Context + Contributions
     context: BehaviorSubject<Context>
+
+    // Viewer + Text documents
+    lastViewerId: number
+    openedTextDocuments: Subject<ExtensionDocument>
+    activeLanguages: BehaviorSubject<ReadonlySet<string>>
+    /** TODO(tj): URI? */
+    modelReferences: ReferenceCounter<string>
+    languageReferences: ReferenceCounter<string>
+    /** Mutable map of URIs to text documents */
+    textDocuments: Map<string, ExtensionDocument>
+
+    // Window
+    /** Mutable map of viewer ID to viewer. */
+    viewComponents: Map<string, ExtensionCodeEditor> // TODO(tj): ext dir viewer
 }
 
 export interface RegisteredProvider<T> {
@@ -70,10 +87,7 @@ export interface InitResult extends Pick<typeof sourcegraph['app'], 'registerFil
 /**
  * mimics sourcegraph.workspace namespace without documents
  */
-export type PartialWorkspaceNamespace = Omit<
-    typeof sourcegraph['workspace'],
-    'textDocuments' | 'onDidOpenTextDocument' | 'openedTextDocuments' | 'roots' | 'versionContext'
->
+export type PartialWorkspaceNamespace = Omit<typeof sourcegraph['workspace'], 'roots' | 'versionContext'>
 
 /** Object of array of file decorations keyed by path relative to repo root uri */
 export type FileDecorationsByPath = Record<string, sourcegraph.FileDecoration[] | undefined>
@@ -106,14 +120,18 @@ export const initNewExtensionAPI = (
     const state: ExtensionHostState = {
         roots: [],
         versionContext: undefined,
+        // TODO(tj): make settings BehaviorSubject
         settings: initialSettings,
+
         queryTransformers: new BehaviorSubject<sourcegraph.QueryTransformer[]>([]),
+
         hoverProviders: new BehaviorSubject<RegisteredProvider<sourcegraph.HoverProvider>[]>([]),
         documentHighlightProviders: new BehaviorSubject<RegisteredProvider<sourcegraph.DocumentHighlightProvider>[]>(
             []
         ),
         definitionProviders: new BehaviorSubject<RegisteredProvider<sourcegraph.DefinitionProvider>[]>([]),
         fileDecorationProviders: new BehaviorSubject<sourcegraph.FileDecorationProvider[]>([]),
+
         context: new BehaviorSubject<Context>({
             'clientApplication.isSourcegraph': clientApplication === 'sourcegraph',
 
@@ -124,7 +142,19 @@ export const initNewExtensionAPI = (
             // extensions needing this).
             'clientApplication.extensionAPIVersion.major': 3,
         }),
+
+        lastViewerId: 0,
+        textDocuments: new Map<string, ExtensionDocument>(),
+        openedTextDocuments: new Subject<ExtensionDocument>(),
+        viewComponents: new Map<string, ExtensionCodeEditor>(),
+        activeLanguages: new BehaviorSubject<ReadonlySet<string>>(new Set()),
+        languageReferences: new ReferenceCounter<string>(),
+        // model references
     }
+
+    // TODO(tj): document these 'changes' to differentiate them from state. possibly
+    // add an explicit 'changes' object as well?
+    // activeViewComponentChanges
 
     const configChanges = new BehaviorSubject<void>(undefined)
     // Most extensions never call `configuration.get()` synchronously in `activate()` to get
@@ -135,9 +165,16 @@ export const initNewExtensionAPI = (
 
     const versionContextChanges = new Subject<string | undefined>()
 
+    // TODO(tj): document helpers
+
+    // getTextDocument
+    // getViewer
+    // removeTextDocument
+
     const exposedToMain: FlatExtensionHostAPI = {
         // Configuration
         syncSettingsData: data => {
+            // TODO(tj): why don't we directly subscribe to platformContext.settings?
             state.settings = Object.freeze(data)
             configChanges.next()
         },
@@ -239,6 +276,15 @@ export const initNewExtensionAPI = (
                       )
             ),
 
+        // Viewer
+
+        // addViewerIfNotExists
+        // removeViewer
+        // getActiveCodeEditorPosition (piped off activeViewComponentChanges)
+        // setEditorSelections
+        // getDecorations
+        // addTextDocumentIfNotExists
+
         // Context data + Contributions
         updateContext,
     }
@@ -258,6 +304,11 @@ export const initNewExtensionAPI = (
 
     // Workspace
     const workspace: PartialWorkspaceNamespace = {
+        get textDocuments() {
+            return [...state.textDocuments.values()]
+        },
+        onDidOpenTextDocument: state.openedTextDocuments.asObservable(),
+        openedTextDocuments: state.openedTextDocuments.asObservable(),
         onDidChangeRoots: rootChanges.asObservable(),
         rootChanges: rootChanges.asObservable(),
         versionContextChanges: versionContextChanges.asObservable(),

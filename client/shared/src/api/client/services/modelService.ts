@@ -156,6 +156,8 @@ export function createModelService(): ModelService {
         },
         hasModel: uri => models.has(uri),
         removeModel: uri => {
+            // TODO(tj): why is this never called? should we still implement this?
+            // NVM, it's called by viewerService when deleting viewers
             const model = getModel(uri)
             models.delete(uri)
             modelUpdates.next([{ type: 'deleted', uri }])

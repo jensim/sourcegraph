@@ -66,6 +66,7 @@ export class ClientViews implements ClientViewsAPI {
     constructor(
         private panelViewRegistry: PanelViewProviderRegistry,
         private textDocumentLocations: TextDocumentLocationProviderIDRegistry,
+        // TODO(tj): use extension host viewer observable until this is moved to extension host as well
         private viewerService: ViewerService,
         private viewService: ViewService
     ) {}
