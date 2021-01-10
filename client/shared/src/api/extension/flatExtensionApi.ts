@@ -149,7 +149,7 @@ export const initNewExtensionAPI = (
         viewComponents: new Map<string, ExtensionCodeEditor>(),
         activeLanguages: new BehaviorSubject<ReadonlySet<string>>(new Set()),
         languageReferences: new ReferenceCounter<string>(),
-        // model references
+        modelReferences: new ReferenceCounter<string>(),
     }
 
     // TODO(tj): document these 'changes' to differentiate them from state. possibly
