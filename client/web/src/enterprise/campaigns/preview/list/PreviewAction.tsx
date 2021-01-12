@@ -55,13 +55,18 @@ export const PreviewAction: React.FunctionComponent<PreviewActionProps> = ({ nod
 
 const iconClassNames = 'm-0 text-nowrap d-block d-sm-flex flex-column align-items-center justify-content-center'
 
-export const PreviewActionPublish: React.FunctionComponent<{ className?: string }> = ({ className }) => (
+export const PreviewActionPublish: React.FunctionComponent<{ label?: string; className?: string }> = ({
+    className,
+    label = 'Publish',
+}) => (
     <div className={classNames(className, iconClassNames)}>
         <UploadIcon data-tooltip="This changeset will be published to its code host" />
-        <span>Publish</span>
+        <span>{label}</span>
     </div>
 )
-export const PreviewActionPublishDraft: React.FunctionComponent<{ className?: string }> = ({ className }) => (
+export const PreviewActionPublishDraft: React.FunctionComponent<{ label?: string; className?: string }> = ({
+    className,
+}) => (
     <div className={classNames(className, iconClassNames)}>
         <UploadIcon
             className="text-muted"
@@ -70,41 +75,58 @@ export const PreviewActionPublishDraft: React.FunctionComponent<{ className?: st
         <span>Publish draft</span>
     </div>
 )
-export const PreviewActionImport: React.FunctionComponent<{ className?: string }> = ({ className }) => (
+export const PreviewActionImport: React.FunctionComponent<{ label?: string; className?: string }> = ({
+    className,
+    label = 'Import',
+}) => (
     <div className={classNames(className, iconClassNames)}>
         <ImportIcon data-tooltip="This changeset will be imported and tracked in this campaign" />
-        <span>Import</span>
+        <span>{label}</span>
     </div>
 )
-// TODO: This is currently correct, but as soon as we have a detach reconciler operation, that should be taken into account.
-export const PreviewActionClose: React.FunctionComponent<{ className?: string }> = ({ className }) => (
+export const PreviewActionClose: React.FunctionComponent<{ label?: string; className?: string }> = ({
+    className,
+    label = 'Close',
+}) => (
     <div className={classNames(className, iconClassNames)}>
         <CloseCircleOutlineIcon className="text-danger" data-tooltip="This changeset will be closed on the code host" />
-        <span>Close &amp; Detach</span>
+        <span>{label}</span>
     </div>
 )
-export const PreviewActionDetach: React.FunctionComponent<{ className?: string }> = ({ className }) => (
+export const PreviewActionDetach: React.FunctionComponent<{ label?: string; className?: string }> = ({
+    className,
+    label = 'Detach',
+}) => (
     <div className={classNames(className, iconClassNames)}>
         <TrashIcon className="text-danger" data-tooltip="This changeset will be removed from the campaign" />
-        <span>Detach</span>
+        <span>{label}</span>
     </div>
 )
-export const PreviewActionReopen: React.FunctionComponent<{ className?: string }> = ({ className }) => (
+export const PreviewActionReopen: React.FunctionComponent<{ label?: string; className?: string }> = ({
+    className,
+    label = 'Reopen',
+}) => (
     <div className={classNames(className, iconClassNames)}>
         <SourceBranchRefreshIcon data-tooltip="This changeset will be reopened on the code host" />
-        <span>Reopen</span>
+        <span>{label}</span>
     </div>
 )
-export const PreviewActionUndraft: React.FunctionComponent<{ className?: string }> = ({ className }) => (
+export const PreviewActionUndraft: React.FunctionComponent<{ label?: string; className?: string }> = ({
+    className,
+    label = 'Undraft',
+}) => (
     <div className={classNames(className, iconClassNames)}>
         <SourceBranchCheckIcon data-tooltip="This changeset will be marked as ready for review on the code host" />
-        <span>Undraft</span>
+        <span>{label}</span>
     </div>
 )
-export const PreviewActionUpdate: React.FunctionComponent<{ className?: string }> = ({ className }) => (
+export const PreviewActionUpdate: React.FunctionComponent<{ label?: string; className?: string }> = ({
+    className,
+    label = 'Update',
+}) => (
     <div className={classNames(className, iconClassNames)}>
         <SourceBranchSyncIcon data-tooltip="This changeset will be updated on the code host" />
-        <span>Update</span>
+        <span>{label}</span>
     </div>
 )
 export const PreviewActionUnknown: React.FunctionComponent<{ className?: string; operations: string }> = ({
