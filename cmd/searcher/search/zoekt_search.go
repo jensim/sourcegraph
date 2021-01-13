@@ -14,7 +14,6 @@ import (
 	"github.com/opentracing/opentracing-go"
 	"github.com/sourcegraph/sourcegraph/internal/trace/ot"
 
-	"github.com/sourcegraph/sourcegraph/cmd/frontend/graphqlbackend"
 	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/comby"
 	"github.com/sourcegraph/sourcegraph/internal/search"
@@ -27,8 +26,90 @@ var (
 	defaultTimeout = 20 * time.Second
 )
 
+func noOpAnyChar(re *syntax.Regexp) {
+	if re.Op == syntax.OpAnyChar {
+		re.Op = syntax.OpAnyCharNotNL
+	}
+	for _, s := range re.Sub {
+		noOpAnyChar(s)
+	}
+}
+
+func parseRe(pattern string, filenameOnly bool, contentOnly bool, queryIsCaseSensitive bool) (zoektquery.Q, error) {
+	// these are the flags used by zoekt, which differ to searcher.
+	re, err := syntax.Parse(pattern, syntax.ClassNL|syntax.PerlX|syntax.UnicodeGroups)
+	if err != nil {
+		return nil, err
+	}
+	noOpAnyChar(re)
+	// zoekt decides to use its literal optimization at the query parser
+	// level, so we check if our regex can just be a literal.
+	if re.Op == syntax.OpLiteral {
+		return &zoektquery.Substring{
+			Pattern:       string(re.Rune),
+			CaseSensitive: queryIsCaseSensitive,
+			Content:       contentOnly,
+			FileName:      filenameOnly,
+		}, nil
+	}
+	return &zoektquery.Regexp{
+		Regexp:        re,
+		CaseSensitive: queryIsCaseSensitive,
+		Content:       contentOnly,
+		FileName:      filenameOnly,
+	}, nil
+}
+
+func fileRe(pattern string, queryIsCaseSensitive bool) (zoektquery.Q, error) {
+	return parseRe(pattern, true, false, queryIsCaseSensitive)
+}
+
+func HandleFilePathPatterns(query *search.TextPatternInfo) (zoektquery.Q, error) {
+	var and []zoektquery.Q
+
+	// Zoekt uses regular expressions for file paths.
+	// Unhandled cases: PathPatternsAreCaseSensitive and whitespace in file path patterns.
+	for _, p := range query.IncludePatterns {
+		q, err := fileRe(p, query.IsCaseSensitive)
+		if err != nil {
+			return nil, err
+		}
+		and = append(and, q)
+	}
+	if query.ExcludePattern != "" {
+		q, err := fileRe(query.ExcludePattern, query.IsCaseSensitive)
+		if err != nil {
+			return nil, err
+		}
+		and = append(and, &zoektquery.Not{Child: q})
+	}
+
+	// For conditionals that happen on a repo we can use type:repo queries. eg
+	// (type:repo file:foo) (type:repo file:bar) will match all repos which
+	// contain a filename matching "foo" and a filename matchinb "bar".
+	//
+	// Note: (type:repo file:foo file:bar) will only find repos with a
+	// filename containing both "foo" and "bar".
+	for _, p := range query.FilePatternsReposMustInclude {
+		q, err := fileRe(p, query.IsCaseSensitive)
+		if err != nil {
+			return nil, err
+		}
+		and = append(and, &zoektquery.Type{Type: zoektquery.TypeRepo, Child: q})
+	}
+	for _, p := range query.FilePatternsReposMustExclude {
+		q, err := fileRe(p, query.IsCaseSensitive)
+		if err != nil {
+			return nil, err
+		}
+		and = append(and, &zoektquery.Not{Child: &zoektquery.Type{Type: zoektquery.TypeRepo, Child: q}})
+	}
+
+	return zoektquery.NewAnd(and...), nil
+}
+
 type zoektSearchStreamEvent struct {
-	fm       []*graphqlbackend.FileMatchResolver
+	fm       []zoekt.FileMatch
 	limitHit bool
 	partial  map[api.RepoID]struct{}
 	err      error
@@ -40,7 +121,7 @@ type zoektSearchStreamEvent struct {
 // Timeouts are reported through the context, and as a special case errNoResultsInTimeout
 // is returned if no results are found in the given timeout (instead of the more common
 // case of finding partial or full results in the given timeout).
-func zoektSearchHEADOnlyFiles(ctx context.Context, args *search.TextParameters, repos *graphqlbackend.IndexedRepoRevs, since func(t time.Time) time.Duration, c chan<- zoektSearchStreamEvent) (fm []*graphqlbackend.FileMatchResolver, limitHit bool, partial map[api.RepoID]struct{}, err error) {
+func zoektSearchHEADOnlyFiles(ctx context.Context, args *search.TextParameters, repoBranches map[string][]string, since func(t time.Time) time.Duration, c chan<- zoektSearchStreamEvent) (fm []zoekt.FileMatch, limitHit bool, partial map[api.RepoID]struct{}, err error) {
 	defer func() {
 		if c != nil {
 			c <- zoektSearchStreamEvent{
@@ -51,11 +132,11 @@ func zoektSearchHEADOnlyFiles(ctx context.Context, args *search.TextParameters, 
 			}
 		}
 	}()
-	if len(repos.RepoRevs) == 0 {
+	if len(repoBranches) == 0 {
 		return nil, false, nil, nil
 	}
 
-	k := zoektResultCountFactor(len(repos.RepoBranches), args.PatternInfo.FileMatchLimit, args.Mode == search.ZoektGlobalSearch)
+	k := zoektResultCountFactor(len(repoBranches), args.PatternInfo.FileMatchLimit, args.Mode == search.ZoektGlobalSearch)
 	searchOpts := zoektSearchOpts(ctx, k, args.PatternInfo)
 
 	if args.UseFullDeadline {
@@ -74,13 +155,13 @@ func zoektSearchHEADOnlyFiles(ctx context.Context, args *search.TextParameters, 
 		defer cancel()
 	}
 
-	filePathPatterns, err := graphqlbackend.HandleFilePathPatterns(args.PatternInfo)
+	filePathPatterns, err := HandleFilePathPatterns(args.PatternInfo)
 	if err != nil {
 		return nil, false, nil, err
 	}
 
 	t0 := time.Now()
-	q, err := buildQuery(args, repos, filePathPatterns, true)
+	q, err := buildQuery(args, repoBranches, filePathPatterns, true)
 	if err != nil {
 		return nil, false, nil, err
 	}
@@ -97,7 +178,7 @@ func zoektSearchHEADOnlyFiles(ctx context.Context, args *search.TextParameters, 
 	// If the previous indexed search did not return a substantial number of matching file candidates or count was
 	// manually specified, run a more complete and expensive search.
 	if resp.FileCount < 10 || args.PatternInfo.FileMatchLimit != defaultMaxSearchResults {
-		q, err = buildQuery(args, repos, filePathPatterns, false)
+		q, err = buildQuery(args, repoBranches, filePathPatterns, false)
 		if err != nil {
 			return nil, false, nil, err
 		}
@@ -116,39 +197,25 @@ func zoektSearchHEADOnlyFiles(ctx context.Context, args *search.TextParameters, 
 		return nil, false, nil, nil
 	}
 
-	limitHit, files, partial := zoektLimitMatches(limitHit, int(args.PatternInfo.FileMatchLimit), resp.Files, func(file *zoekt.FileMatch) (repo *types.RepoName, revs []string, ok bool) {
-		repo, inputRevs := repos.GetRepoInputRev(file)
-		return repo, inputRevs, true
-	})
-	resp.Files = files
+	// TODO fix file limiting
+	// limitHit, files, partial := zoektLimitMatches(limitHit, int(args.PatternInfo.FileMatchLimit), resp.Files, func(file *zoekt.FileMatch) (repo *types.RepoName, revs []string, ok bool) {
+	// 	repo, inputRevs := repos.GetRepoInputRev(file)
+	// 	return repo, inputRevs, true
+	// })
+	// resp.Files = files
 
 	maxLineMatches := 25 + k
-	matches := make([]*graphqlbackend.FileMatchResolver, len(resp.Files))
-	repoResolvers := make(graphqlbackend.RepositoryResolverCache)
-	for i, file := range resp.Files {
-		fileLimitHit := false
+	for _, file := range resp.Files {
 		if len(file.LineMatches) > maxLineMatches {
 			file.LineMatches = file.LineMatches[:maxLineMatches]
-			fileLimitHit = true
 			limitHit = true
-		}
-		repoRev := repos.RepoRevs[file.Repository]
-		if repoResolvers[repoRev.Repo.Name] == nil {
-			repoResolvers[repoRev.Repo.Name] = graphqlbackend.NewRepositoryResolver(repoRev.Repo.ToRepo())
-		}
-		matches[i] = &graphqlbackend.FileMatchResolver{
-			JPath:     file.FileName,
-			JLimitHit: fileLimitHit,
-			URI:       fileMatchURI(repoRev.Repo.Name, "", file.FileName),
-			Repo:      repoResolvers[repoRev.Repo.Name],
-			CommitID:  api.CommitID(file.Version),
 		}
 	}
 
-	return matches, limitHit, partial, nil
+	return resp.Files, limitHit, partial, nil
 }
 
-func buildQuery(args *search.TextParameters, repos *graphqlbackend.IndexedRepoRevs, filePathPatterns zoektquery.Q, shortcircuit bool) (zoektquery.Q, error) {
+func buildQuery(args *search.TextParameters, repoBranches map[string][]string, filePathPatterns zoektquery.Q, shortcircuit bool) (zoektquery.Q, error) {
 	regexString := comby.StructuralPatToRegexpQuery(args.PatternInfo.Pattern, shortcircuit)
 	if len(regexString) == 0 {
 		return &zoektquery.Const{Value: true}, nil
@@ -158,7 +225,7 @@ func buildQuery(args *search.TextParameters, repos *graphqlbackend.IndexedRepoRe
 		return nil, err
 	}
 	return zoektquery.NewAnd(
-		&zoektquery.RepoBranches{Set: repos.RepoBranches},
+		&zoektquery.RepoBranches{Set: repoBranches},
 		filePathPatterns,
 		&zoektquery.Regexp{
 			Regexp:        re,
