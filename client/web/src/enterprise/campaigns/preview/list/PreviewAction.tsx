@@ -4,6 +4,7 @@ import BlankCircleIcon from 'mdi-react/CheckboxBlankCircleOutlineIcon'
 import ImportIcon from 'mdi-react/ImportIcon'
 import UploadIcon from 'mdi-react/UploadIcon'
 import TrashIcon from 'mdi-react/TrashIcon'
+import UploadNetworkIcon from 'mdi-react/UploadNetworkIcon'
 import SourceBranchRefreshIcon from 'mdi-react/SourceBranchRefreshIcon'
 import SourceBranchSyncIcon from 'mdi-react/SourceBranchSyncIcon'
 import SourceBranchCheckIcon from 'mdi-react/SourceBranchCheckIcon'
@@ -11,60 +12,82 @@ import BeakerQuestionIcon from 'mdi-react/BeakerQuestionIcon'
 import classNames from 'classnames'
 import CloseCircleOutlineIcon from 'mdi-react/CloseCircleOutlineIcon'
 
-export interface PreviewActionProps {
+export interface PreviewActionsProps {
     node: ChangesetApplyPreviewFields
     className?: string
 }
 
-export const PreviewAction: React.FunctionComponent<PreviewActionProps> = ({ node, className }) => {
+export const PreviewActions: React.FunctionComponent<PreviewActionsProps> = ({ node, className }) => {
     if (node.__typename === 'HiddenChangesetApplyPreview') {
-        return <PreviewActionNoAction reason={NoActionReasonStrings[NoActionReason.NO_ACCESS]} className={className} />
+        return (
+            <div className={classNames('d-flex flex-column align-items-left justify-content-center', className)}>
+                <PreviewActionNoAction reason={NoActionReasonStrings[NoActionReason.NO_ACCESS]} />
+            </div>
+        )
     }
     if (node.operations.length === 0) {
-        return <PreviewActionNoAction className={className} />
+        return (
+            <div className={classNames('d-flex flex-column align-items-left justify-content-center', className)}>
+                <PreviewActionNoAction />
+            </div>
+        )
     }
-    if (node.operations.includes(ChangesetSpecOperation.IMPORT)) {
-        return <PreviewActionImport className={className} />
-    }
-    if (node.operations.includes(ChangesetSpecOperation.PUBLISH)) {
-        return <PreviewActionPublish className={className} />
-    }
-    if (node.operations.includes(ChangesetSpecOperation.PUBLISH_DRAFT)) {
-        return <PreviewActionPublishDraft className={className} />
-    }
-    if (node.operations.includes(ChangesetSpecOperation.CLOSE)) {
-        return <PreviewActionClose className={className} />
-    }
-    if (node.operations.includes(ChangesetSpecOperation.REOPEN)) {
-        return <PreviewActionReopen className={className} />
-    }
-    if (node.operations.includes(ChangesetSpecOperation.UNDRAFT)) {
-        return <PreviewActionUndraft className={className} />
-    }
-    if (
-        node.operations.includes(ChangesetSpecOperation.UPDATE) ||
-        node.operations.includes(ChangesetSpecOperation.PUSH)
-    ) {
-        return <PreviewActionUpdate className={className} />
-    }
-    if (node.operations.includes(ChangesetSpecOperation.DETACH)) {
-        return <PreviewActionDetach className={className} />
-    }
-    return <PreviewActionUnknown operations={node.operations.join(' => ')} className={className} />
+    return (
+        <div className={classNames('d-flex flex-column align-items-left justify-content-center', className)}>
+            {node.operations.map(operation => (
+                <PreviewAction operation={operation} operations={node.operations} key={operation} />
+            ))}
+        </div>
+    )
 }
 
-const iconClassNames = 'm-0 text-nowrap d-block d-sm-flex flex-column align-items-center justify-content-center'
+interface PreviewActionProps {
+    operation: ChangesetSpecOperation
+    operations: ChangesetSpecOperation[]
+    className?: string
+}
+
+const PreviewAction: React.FunctionComponent<PreviewActionProps> = ({ operation, operations, className }) => {
+    switch (operation) {
+        case ChangesetSpecOperation.IMPORT:
+            return <PreviewActionImport className={className} />
+        case ChangesetSpecOperation.PUBLISH:
+            return <PreviewActionPublish className={className} />
+        case ChangesetSpecOperation.PUBLISH_DRAFT:
+            return <PreviewActionPublishDraft className={className} />
+        case ChangesetSpecOperation.CLOSE:
+            return <PreviewActionClose className={className} />
+        case ChangesetSpecOperation.REOPEN:
+            return <PreviewActionReopen className={className} />
+        case ChangesetSpecOperation.UNDRAFT:
+            return <PreviewActionUndraft className={className} />
+        case ChangesetSpecOperation.UPDATE:
+            return <PreviewActionUpdate className={className} />
+        case ChangesetSpecOperation.PUSH:
+            return <PreviewActionPush className={className} />
+        case ChangesetSpecOperation.DETACH:
+            return <PreviewActionDetach className={className} />
+        case ChangesetSpecOperation.SYNC:
+        case ChangesetSpecOperation.SLEEP:
+            // We don't want to expose these states.
+            return null
+        default:
+            return <PreviewActionUnknown operations={operations.join(' => ')} className={className} />
+    }
+}
+
+const iconClassNames = 'm-0 text-nowrap'
 
 export const PreviewActionPublish: React.FunctionComponent<{ className?: string }> = ({ className }) => (
     <div className={classNames(className, iconClassNames)}>
-        <UploadIcon data-tooltip="This changeset will be published to its code host" />
+        <UploadIcon className="icon-inline mr-1" data-tooltip="This changeset will be published to its code host" />
         <span>Publish</span>
     </div>
 )
 export const PreviewActionPublishDraft: React.FunctionComponent<{ className?: string }> = ({ className }) => (
     <div className={classNames(className, iconClassNames)}>
         <UploadIcon
-            className="text-muted"
+            className="text-muted mr-1 icon-inline"
             data-tooltip="This changeset will be published as a draft to its code host"
         />
         <span>Publish draft</span>
@@ -72,39 +95,62 @@ export const PreviewActionPublishDraft: React.FunctionComponent<{ className?: st
 )
 export const PreviewActionImport: React.FunctionComponent<{ className?: string }> = ({ className }) => (
     <div className={classNames(className, iconClassNames)}>
-        <ImportIcon data-tooltip="This changeset will be imported and tracked in this campaign" />
+        <ImportIcon
+            className="icon-inline mr-1"
+            data-tooltip="This changeset will be imported and tracked in this campaign"
+        />
         <span>Import</span>
     </div>
 )
-// TODO: This is currently correct, but as soon as we have a detach reconciler operation, that should be taken into account.
 export const PreviewActionClose: React.FunctionComponent<{ className?: string }> = ({ className }) => (
     <div className={classNames(className, iconClassNames)}>
-        <CloseCircleOutlineIcon className="text-danger" data-tooltip="This changeset will be closed on the code host" />
-        <span>Close &amp; Detach</span>
+        <CloseCircleOutlineIcon
+            className="text-danger mr-1 icon-inline"
+            data-tooltip="This changeset will be closed on the code host"
+        />
+        <span>Close</span>
     </div>
 )
 export const PreviewActionDetach: React.FunctionComponent<{ className?: string }> = ({ className }) => (
     <div className={classNames(className, iconClassNames)}>
-        <TrashIcon className="text-danger" data-tooltip="This changeset will be removed from the campaign" />
+        <TrashIcon
+            className="text-danger mr-1 icon-inline"
+            data-tooltip="This changeset will be removed from the campaign"
+        />
         <span>Detach</span>
     </div>
 )
 export const PreviewActionReopen: React.FunctionComponent<{ className?: string }> = ({ className }) => (
     <div className={classNames(className, iconClassNames)}>
-        <SourceBranchRefreshIcon data-tooltip="This changeset will be reopened on the code host" />
+        <SourceBranchRefreshIcon
+            className="icon-inline text-success mr-1"
+            data-tooltip="This changeset will be reopened on the code host"
+        />
         <span>Reopen</span>
     </div>
 )
 export const PreviewActionUndraft: React.FunctionComponent<{ className?: string }> = ({ className }) => (
     <div className={classNames(className, iconClassNames)}>
-        <SourceBranchCheckIcon data-tooltip="This changeset will be marked as ready for review on the code host" />
+        <SourceBranchCheckIcon
+            className="icon-inline text-success mr-1"
+            data-tooltip="This changeset will be marked as ready for review on the code host"
+        />
         <span>Undraft</span>
     </div>
 )
 export const PreviewActionUpdate: React.FunctionComponent<{ className?: string }> = ({ className }) => (
     <div className={classNames(className, iconClassNames)}>
-        <SourceBranchSyncIcon data-tooltip="This changeset will be updated on the code host" />
+        <SourceBranchSyncIcon
+            className="icon-inline mr-1"
+            data-tooltip="This changeset will be updated on the code host"
+        />
         <span>Update</span>
+    </div>
+)
+export const PreviewActionPush: React.FunctionComponent<{ className?: string }> = ({ className }) => (
+    <div className={classNames(className, iconClassNames)}>
+        <UploadNetworkIcon className="icon-inline mr-1" data-tooltip="A new commit will be pushed to the code host" />
+        <span>Push</span>
     </div>
 )
 export const PreviewActionUnknown: React.FunctionComponent<{ className?: string; operations: string }> = ({
@@ -112,7 +158,10 @@ export const PreviewActionUnknown: React.FunctionComponent<{ className?: string;
     className,
 }) => (
     <div className={classNames(className, iconClassNames)}>
-        <BeakerQuestionIcon data-tooltip={`The operation ${operations} can't yet be displayed.`} />
+        <BeakerQuestionIcon
+            className="icon-inline mr-1"
+            data-tooltip={`The operation ${operations} can't yet be displayed.`}
+        />
         <span>Unknown</span>
     </div>
 )
@@ -127,7 +176,7 @@ export const PreviewActionNoAction: React.FunctionComponent<{ className?: string
     reason,
 }) => (
     <div className={classNames(className, iconClassNames, 'text-muted')}>
-        <BlankCircleIcon data-tooltip={reason} />
+        <BlankCircleIcon className="icon-inline mr-1" data-tooltip={reason} />
         <span>No action</span>
     </div>
 )
