@@ -26,6 +26,9 @@ export interface Controller extends Unsubscribable {
 
     services: Services
 
+    // TODO(tj): flatten services that must have some client side state (e.g. commands, views)
+    // into Controller interface
+
     /**
      * Executes the command (registered in the CommandRegistry) specified in params. If an error is thrown, the
      * error is returned *and* emitted on the {@link Controller#notifications} observable.

@@ -188,6 +188,7 @@ function createExtensionAPI(
         NotificationType,
         DocumentHighlightKind,
         app: {
+            // TODO(tj): deprecate the following 3, implement get window()
             activeWindowChanges: windows.activeWindowChanges,
             get activeWindow(): sourcegraph.Window | undefined {
                 return windows.activeWindow

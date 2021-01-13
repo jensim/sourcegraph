@@ -75,13 +75,6 @@ export interface FlatExtensionHostAPI {
     getPartialModel(uri: string): PartialModel
 
     /**
-     * Adds a model.
-     *
-     * @param model The model to add.
-     */
-    addModelIfNotExists(model: TextModel): void
-
-    /**
      * Updates a model's text content.
      *
      * @param uri The URI of the model whose content to update.
@@ -103,6 +96,11 @@ export interface FlatExtensionHostAPI {
     getActiveCodeEditorPosition: () => ProxySubscribable<TextDocumentPositionParameters | null>
 
     /**
+     * TODO(tj)
+     */
+    getDecorations: (viewerId: ViewerId) => ProxySubscribable<clientType.TextDocumentDecoration[]>
+
+    /**
      * Add a viewer.
      *
      * @param viewer The description of the viewer to add.
@@ -119,7 +117,7 @@ export interface FlatExtensionHostAPI {
      * @throws if no editor exists with the given editor ID.
      * @throws if the editor ID is not a CodeEditor.
      */
-    setEditorSelections(codeEditor: ViewerId, selections: Selection[]): void
+    setEditorSelections(codeEditor: ViewerId, selections: clientType.Selection[]): void
 
     /**
      * Removes a viewer.

@@ -108,6 +108,7 @@ export class BlobPanel extends React.PureComponent<Props> {
                     )
                 ),
                 map(textDocumentPositionParameters => {
+                    console.log({ textDocumentPositionParameters })
                     if (!textDocumentPositionParameters) {
                         return null
                     }

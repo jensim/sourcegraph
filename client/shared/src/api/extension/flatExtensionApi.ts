@@ -14,7 +14,7 @@ import { fromLocation, toPosition } from './api/types'
 import { TextDocumentPositionParameters } from '../protocol'
 import { LOADING, MaybeLoadingResult } from '@sourcegraph/codeintellify'
 import { combineLatestOrDefault } from '../../util/rxjs/combineLatestOrDefault'
-import { castArray, groupBy, identity, isEqual, isMatch } from 'lodash'
+import { castArray, groupBy, identity, isEqual, isMatch, sortBy } from 'lodash'
 import { fromHoverMerged } from '../client/types/hover'
 import { isNot, isExactly, isDefined } from '../../util/types'
 import { validateFileDecoration } from './api/decorations'
@@ -25,6 +25,7 @@ import { ExtensionCodeEditor } from './api/codeEditor'
 import { TextModelUpdate } from '../client/services/modelService'
 import { ExtensionViewer, Viewer, ViewerId } from '../viewerTypes'
 import { ExtensionDirectoryViewer } from './api/directoryViewer'
+import { ExtensionWindow } from './api/windows'
 
 /**
  * Holds the entire state exposed to the extension host
@@ -61,9 +62,11 @@ export interface ExtensionHostState {
     /** Mutable map of URIs to text documents */
     textDocuments: Map<string, ExtensionDocument>
 
-    // Window
     /** Mutable map of viewer ID to viewer. */
     viewComponents: Map<string, ExtensionViewer> // TODO(tj): ext dir viewer
+    // Window TODO(tj): flatten window methods, window class need not exist!
+    window: ExtensionWindow
+    activeViewComponentChanges: BehaviorSubject<ExtensionViewer | undefined>
 }
 
 export interface RegisteredProvider<T> {
@@ -167,14 +170,14 @@ export const initNewExtensionAPI = (
         activeLanguages: new BehaviorSubject<ReadonlySet<string>>(new Set()),
         languageReferences: new ReferenceCounter<string>(),
         modelReferences: new ReferenceCounter<string>(),
+
+        // TODO: flattened window methods
+        activeViewComponentChanges: new BehaviorSubject<ExtensionViewer | undefined>(undefined),
     }
 
     // TODO(tj): document these 'changes' to differentiate them from state. possibly
     // add an explicit 'changes' object as well?
     // CHANGES/UPDATES STREAMS
-
-    // activeViewComponentChanges
-    const activeViewComponentChanges = new BehaviorSubject<ExtensionViewer | undefined>(undefined)
 
     const configChanges = new BehaviorSubject<void>(undefined)
     // Most extensions never call `configuration.get()` synchronously in `activate()` to get
@@ -362,31 +365,51 @@ export const initNewExtensionAPI = (
 
             state.viewComponents.set(viewerId, viewComponent)
             if (viewerData.isActive) {
-                activeViewComponentChanges.next(viewComponent)
+                state.activeViewComponentChanges.next(viewComponent)
             }
             return { viewerId }
         },
-        // removeViewer
+
         removeViewer: ({ viewerId }) => {
             const viewer = getViewer(viewerId)
             state.viewComponents.delete(viewerId)
             // Check if this was the active viewer
-            if (activeViewComponentChanges.value?.viewerId === viewerId) {
-                activeViewComponentChanges.next(undefined)
+            if (state.activeViewComponentChanges.value?.viewerId === viewerId) {
+                state.activeViewComponentChanges.next(undefined)
             }
             if (viewer.type === 'CodeEditor' && state.modelReferences.decrement(viewer.resource)) {
                 removeTextDocument(viewer.resource)
             }
         },
 
-        // setEditorSelections
-        // getDecorations
-        // addTextDocumentIfNotExists
+        setEditorSelections: ({ viewerId }, selections) => {
+            const viewer = getViewer(viewerId)
+            assertViewerType(viewer, 'CodeEditor')
+            viewer.update({ selections })
+        },
+        getDecorations: ({ viewerId }) => {
+            const viewer = getViewer(viewerId)
+            assertViewerType(viewer, 'CodeEditor')
+            return proxySubscribable(viewer.mergedDecorations)
+        },
+
+        addTextDocumentIfNotExists: textDocumentData => {
+            if (state.textDocuments.has(textDocumentData.uri)) {
+                return
+            }
+            const textDocument = new ExtensionDocument(textDocumentData)
+            state.textDocuments.set(textDocumentData.uri, textDocument)
+            state.openedTextDocuments.next(textDocument)
+            // Update activeLanguages if no other existing model has the same language.
+            if (state.languageReferences.increment(textDocumentData.languageId)) {
+                state.activeLanguages.next(new Set<string>(state.languageReferences.keys()))
+            }
+        },
 
         // TODO(tj): for panel view location provider arguments
         getActiveCodeEditorPosition: () =>
             proxySubscribable(
-                activeViewComponentChanges.pipe(
+                state.activeViewComponentChanges.pipe(
                     map(activeViewer => {
                         if (activeViewer?.type !== 'CodeEditor') {
                             return null
@@ -447,6 +470,35 @@ export const initNewExtensionAPI = (
         onDidChangeRoots: rootChanges.asObservable(),
         rootChanges: rootChanges.asObservable(),
         versionContextChanges: versionContextChanges.asObservable(),
+    }
+
+    // App
+    const window: sourcegraph.Window = {
+        get visibleViewComponents(): sourcegraph.ViewComponent[] {
+            const entries = [...state.viewComponents.entries()]
+            return sortBy(entries, 0).map(([, viewComponent]) => viewComponent)
+        },
+        get activeViewComponent(): sourcegraph.ViewComponent | undefined {
+            return state.activeViewComponentChanges.value
+        },
+        activeViewComponentChanges: state.activeViewComponentChanges.asObservable(),
+        // TODO(tj): flatten notification api
+        showNotification: () => {},
+        withProgress: () => {},
+        showProgress: () => {},
+        showMessage: () => {},
+        showInputBox: () => {},
+    }
+
+    const app: Pick<typeof sourcegraph['app'], 'activeWindow' | 'activeWindowChanges' | 'windows'> = {
+        // deprecated
+        get activeWindow() {
+            return window
+        },
+        activeWindowChanges: new BehaviorSubject(window).asObservable(),
+        get windows() {
+            return [window]
+        },
     }
 
     // Commands
