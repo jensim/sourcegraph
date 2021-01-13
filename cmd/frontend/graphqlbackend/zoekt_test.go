@@ -751,7 +751,7 @@ func BenchmarkIntegrationSearchResults(b *testing.B) {
 	})
 	defer cleanup()
 	z := &searchbackend.Zoekt{
-		Client:       searchbackend.AdaptStreamSearcher(zoektClient),
+		Client:       &searchbackend.StreamSearchAdapter{zoektClient},
 		DisableCache: true,
 	}
 
