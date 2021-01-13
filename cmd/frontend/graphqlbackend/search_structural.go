@@ -58,7 +58,7 @@ func HandleFilePathPatterns(query *search.TextPatternInfo) (zoektquery.Q, error)
 	return zoektquery.NewAnd(and...), nil
 }
 
-func buildQuery(args *search.TextParameters, repos *indexedRepoRevs, filePathPatterns zoektquery.Q, shortcircuit bool) (zoektquery.Q, error) {
+func buildQuery(args *search.TextParameters, repos *IndexedRepoRevs, filePathPatterns zoektquery.Q, shortcircuit bool) (zoektquery.Q, error) {
 	regexString := comby.StructuralPatToRegexpQuery(args.PatternInfo.Pattern, shortcircuit)
 	if len(regexString) == 0 {
 		return &zoektquery.Const{Value: true}, nil
@@ -68,7 +68,7 @@ func buildQuery(args *search.TextParameters, repos *indexedRepoRevs, filePathPat
 		return nil, err
 	}
 	return zoektquery.NewAnd(
-		&zoektquery.RepoBranches{Set: repos.repoBranches},
+		&zoektquery.RepoBranches{Set: repos.RepoBranches},
 		filePathPatterns,
 		&zoektquery.Regexp{
 			Regexp:        re,
@@ -78,7 +78,7 @@ func buildQuery(args *search.TextParameters, repos *indexedRepoRevs, filePathPat
 	), nil
 }
 
-func zoektSearchHEADOnlyFilesStream(ctx context.Context, args *search.TextParameters, repos *indexedRepoRevs, _ indexedRequestType, since func(t time.Time) time.Duration) <-chan zoektSearchStreamEvent {
+func zoektSearchHEADOnlyFilesStream(ctx context.Context, args *search.TextParameters, repos *IndexedRepoRevs, _ indexedRequestType, since func(t time.Time) time.Duration) <-chan zoektSearchStreamEvent {
 	c := make(chan zoektSearchStreamEvent)
 	go func() {
 		defer close(c)
@@ -94,7 +94,7 @@ func zoektSearchHEADOnlyFilesStream(ctx context.Context, args *search.TextParame
 // Timeouts are reported through the context, and as a special case errNoResultsInTimeout
 // is returned if no results are found in the given timeout (instead of the more common
 // case of finding partial or full results in the given timeout).
-func zoektSearchHEADOnlyFiles(ctx context.Context, args *search.TextParameters, repos *indexedRepoRevs, since func(t time.Time) time.Duration, c chan<- zoektSearchStreamEvent) (fm []*FileMatchResolver, limitHit bool, partial map[api.RepoID]struct{}, err error) {
+func zoektSearchHEADOnlyFiles(ctx context.Context, args *search.TextParameters, repos *IndexedRepoRevs, since func(t time.Time) time.Duration, c chan<- zoektSearchStreamEvent) (fm []*FileMatchResolver, limitHit bool, partial map[api.RepoID]struct{}, err error) {
 	defer func() {
 		if c != nil {
 			c <- zoektSearchStreamEvent{
@@ -105,11 +105,11 @@ func zoektSearchHEADOnlyFiles(ctx context.Context, args *search.TextParameters, 
 			}
 		}
 	}()
-	if len(repos.repoRevs) == 0 {
+	if len(repos.RepoRevs) == 0 {
 		return nil, false, nil, nil
 	}
 
-	k := zoektResultCountFactor(len(repos.repoBranches), args.PatternInfo.FileMatchLimit, args.Mode == search.ZoektGlobalSearch)
+	k := zoektResultCountFactor(len(repos.RepoBranches), args.PatternInfo.FileMatchLimit, args.Mode == search.ZoektGlobalSearch)
 	searchOpts := zoektSearchOpts(ctx, k, args.PatternInfo)
 
 	if args.UseFullDeadline {
@@ -186,7 +186,7 @@ func zoektSearchHEADOnlyFiles(ctx context.Context, args *search.TextParameters, 
 			fileLimitHit = true
 			limitHit = true
 		}
-		repoRev := repos.repoRevs[file.Repository]
+		repoRev := repos.RepoRevs[file.Repository]
 		if repoResolvers[repoRev.Repo.Name] == nil {
 			repoResolvers[repoRev.Repo.Name] = &RepositoryResolver{innerRepo: repoRev.Repo.ToRepo()}
 		}
