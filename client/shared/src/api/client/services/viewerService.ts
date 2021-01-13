@@ -279,6 +279,7 @@ export function observeEditorAndModel(
     { observeViewer }: Pick<ViewerService, 'observeViewer'>,
     { observeModel }: Pick<ModelService, 'observeModel'>
 ): Observable<CodeEditorWithModel> {
+    // TODO(tj): take ext host api
     return observeViewer({ viewerId }).pipe(
         map(viewer => {
             if (viewer.type !== 'CodeEditor') {

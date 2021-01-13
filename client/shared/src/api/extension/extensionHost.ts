@@ -130,6 +130,9 @@ function createExtensionAPI(
         await proxy.ping()
     }
     const context = new ExtensionContext(proxy.context)
+    // TODO(tj): temporary keep this around even though we don't use it anymore
+    // we're flattening extension windows and documents, but extensionlanguagefeatures
+    // depends on documents. refactor remaining language features in next commit
     const documents = new ExtensionDocuments(sync)
 
     const extensions = new Extensions()
@@ -144,7 +147,6 @@ function createExtensionAPI(
         configuration,
         exposedToMain,
         workspace,
-        state,
         commands,
         search,
         languages: { registerHoverProvider, registerDocumentHighlightProvider, registerDefinitionProvider },
@@ -199,24 +201,7 @@ function createExtensionAPI(
             registerFileDecorationProvider,
         },
 
-        workspace: {
-            get textDocuments(): sourcegraph.TextDocument[] {
-                return documents.getAll()
-            },
-            onDidOpenTextDocument: documents.openedTextDocuments,
-            openedTextDocuments: documents.openedTextDocuments,
-            ...workspace,
-            // we use state here directly because of getters
-            // getter are not preserved as functions via {...obj} syntax
-            // thus expose state until we migrate documents to the new model according RFC 155
-            get roots() {
-                return state.roots
-            },
-            get versionContext() {
-                return state.versionContext
-            },
-        },
-
+        workspace,
         configuration,
 
         languages: {

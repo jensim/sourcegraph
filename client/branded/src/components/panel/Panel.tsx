@@ -2,7 +2,7 @@ import * as H from 'history'
 import CloseIcon from 'mdi-react/CloseIcon'
 import * as React from 'react'
 import { Observable, Subscription } from 'rxjs'
-import { map } from 'rxjs/operators'
+import { map, tap } from 'rxjs/operators'
 import {
     PanelViewWithComponent,
     PanelViewProviderRegistrationOptions,
@@ -67,6 +67,8 @@ interface PanelItem extends Tab<string> {
  * generally use ResizablePanel, not Panel.
  *
  * Other components can contribute panel items to the panel.
+ *
+ * TODO(tj): refactor to function component, easy with useObservable
  */
 class Panel extends React.PureComponent<Props, State> {
     public state: State = {}
@@ -77,7 +79,10 @@ class Panel extends React.PureComponent<Props, State> {
         this.subscriptions.add(
             this.props.extensionsController.services.panelViews
                 .getPanelViews(ContributableViewContainer.Panel)
-                .pipe(map(panelViews => ({ panelViews })))
+                .pipe(
+                    map(panelViews => ({ panelViews })),
+                    tap(stuff => console.log({ stuff }))
+                )
                 .subscribe(stateUpdate => this.setState(stateUpdate))
         )
     }
@@ -104,7 +109,7 @@ class Panel extends React.PureComponent<Props, State> {
         const hasTabs = items.length > 0
         const activePanelViewID = TabsWithURLViewStatePersistence.readFromURL(this.props.location, items)
         const activePanelView = items.find(item => item.id === activePanelViewID)
-
+        console.log({ items })
         return (
             <div className="panel">
                 {hasTabs ? (
@@ -175,3 +180,9 @@ export const ResizablePanel: React.FunctionComponent<Props> = props => (
         element={<Panel {...props} />}
     />
 )
+
+// TODO(tj): client panels API? would enable exceptional privileges to built in panels
+// without complication ext panels API and implementation.
+// Could work by exposing register method which addsWithRollback to a BehaviorSubject.
+// Panels could merge this BehaviorSubjects emissions with panel emissions from the extension host
+// However, this may not work properly should we decide to bring panels to code hosts.

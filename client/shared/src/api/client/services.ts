@@ -1,5 +1,5 @@
 import { PlatformContext } from '../../platform/context'
-import { ReferenceParameters } from '../protocol'
+import { ContributableViewContainer, ReferenceParameters } from '../protocol'
 import { createContextService } from './context/contextService'
 import { CommandRegistry } from './services/command'
 import { CompletionItemProviderRegistry } from './services/completion'
@@ -36,6 +36,12 @@ export class Services {
         } else {
             this.extensions = new ExtensionsService(platformContext, this.model)
         }
+
+        // debugging
+        // TODO(tj): remove after full refactor complete
+        this.panelViews
+            .getPanelViews(ContributableViewContainer.Panel)
+            .subscribe(panels => console.log('registered panel views', panels))
     }
 
     public readonly commands = new CommandRegistry()

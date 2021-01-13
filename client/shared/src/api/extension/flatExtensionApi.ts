@@ -22,6 +22,9 @@ import { InitData } from './extensionHost'
 import { ExtensionDocument } from './api/textDocument'
 import { ReferenceCounter } from '../../util/ReferenceCounter'
 import { ExtensionCodeEditor } from './api/codeEditor'
+import { TextModelUpdate } from '../client/services/modelService'
+import { ExtensionViewer, Viewer, ViewerId } from '../viewerTypes'
+import { ExtensionDirectoryViewer } from './api/directoryViewer'
 
 /**
  * Holds the entire state exposed to the extension host
@@ -60,7 +63,7 @@ export interface ExtensionHostState {
 
     // Window
     /** Mutable map of viewer ID to viewer. */
-    viewComponents: Map<string, ExtensionCodeEditor> // TODO(tj): ext dir viewer
+    viewComponents: Map<string, ExtensionViewer> // TODO(tj): ext dir viewer
 }
 
 export interface RegisteredProvider<T> {
@@ -70,7 +73,7 @@ export interface RegisteredProvider<T> {
 
 export interface InitResult extends Pick<typeof sourcegraph['app'], 'registerFileDecorationProvider'> {
     configuration: sourcegraph.ConfigurationService
-    workspace: PartialWorkspaceNamespace
+    workspace: typeof sourcegraph['workspace']
     exposedToMain: FlatExtensionHostAPI
     // todo this is needed as a temp solution for getter problem
     state: Readonly<ExtensionHostState>
@@ -84,13 +87,25 @@ export interface InitResult extends Pick<typeof sourcegraph['app'], 'registerFil
     internal: Pick<typeof sourcegraph['internal'], 'updateContext'>
 }
 
-/**
- * mimics sourcegraph.workspace namespace without documents
- */
-export type PartialWorkspaceNamespace = Omit<typeof sourcegraph['workspace'], 'roots' | 'versionContext'>
-
 /** Object of array of file decorations keyed by path relative to repo root uri */
 export type FileDecorationsByPath = Record<string, sourcegraph.FileDecoration[] | undefined>
+
+const VIEWER_NOT_FOUND_ERROR_NAME = 'ViewerNotFoundError'
+class ViewerNotFoundError extends Error {
+    public readonly name = VIEWER_NOT_FOUND_ERROR_NAME
+    constructor(viewerId: string) {
+        super(`Viewer not found: ${viewerId}`)
+    }
+}
+
+function assertViewerType<T extends ExtensionViewer['type']>(
+    viewer: ExtensionViewer,
+    type: T
+): asserts viewer is ExtensionViewer & { type: T } {
+    if (viewer.type !== type) {
+        throw new Error(`Viewer ID ${viewer.viewerId} is type ${viewer.type}, expected ${type}`)
+    }
+}
 
 /**
  * Context is an arbitrary, immutable set of key-value pairs. Its value can be any JSON object.
@@ -147,6 +162,8 @@ export const initNewExtensionAPI = (
         textDocuments: new Map<string, ExtensionDocument>(),
         openedTextDocuments: new Subject<ExtensionDocument>(),
         viewComponents: new Map<string, ExtensionCodeEditor>(),
+
+        // TODO(tj): this state is needed for extension activation, but not exposed to main thread or exts
         activeLanguages: new BehaviorSubject<ReadonlySet<string>>(new Set()),
         languageReferences: new ReferenceCounter<string>(),
         modelReferences: new ReferenceCounter<string>(),
@@ -154,7 +171,10 @@ export const initNewExtensionAPI = (
 
     // TODO(tj): document these 'changes' to differentiate them from state. possibly
     // add an explicit 'changes' object as well?
+    // CHANGES/UPDATES STREAMS
+
     // activeViewComponentChanges
+    const activeViewComponentChanges = new BehaviorSubject<ExtensionViewer | undefined>(undefined)
 
     const configChanges = new BehaviorSubject<void>(undefined)
     // Most extensions never call `configuration.get()` synchronously in `activate()` to get
@@ -167,9 +187,51 @@ export const initNewExtensionAPI = (
 
     // TODO(tj): document helpers
 
+    // TODO(tj): modelUpdates -> add to textDocuments (replaces ExtensionDocuments)
+    const modelUpdates = new Subject<TextModelUpdate[]>()
+
+    // TODO(tj): viewerUpdates -> add to viewComponents (replaces ExtensionWindows)
+
     // getTextDocument
     // getViewer
     // removeTextDocument
+
+    // STATE MANIPULATION HELPERS
+    // TODO(tj): explain. you can directly manipulate extension host state, but this is where
+    // helpers go
+
+    const getTextDocument = (uri: string): ExtensionDocument => {
+        const textDocument = textDocuments.get(uri)
+        if (!textDocument) {
+            throw new Error(`Text document does not exist with URI ${uri}`)
+        }
+        return textDocument
+    }
+
+    /**
+     * Removes a model.
+     *
+     * @param uri The URI of the model to remove.
+     */
+    const removeTextDocument = (uri: string): void => {
+        const model = getTextDocument(uri)
+        state.textDocuments.delete(uri)
+        if (state.languageReferences.decrement(model.languageId)) {
+            state.activeLanguages.next(new Set<string>(state.languageReferences.keys()))
+        }
+    }
+
+    /**
+     * Returns the Viewer with the given viewerId.
+     * Throws if no viewer exists with the given viewerId.
+     */
+    const getViewer = (viewerId: ViewerId['viewerId']): ExtensionViewer => {
+        const viewer = state.viewComponents.get(viewerId)
+        if (!viewer) {
+            throw new ViewerNotFoundError(viewerId)
+        }
+        return viewer
+    }
 
     const exposedToMain: FlatExtensionHostAPI = {
         // Configuration
@@ -276,14 +338,81 @@ export const initNewExtensionAPI = (
                       )
             ),
 
-        // Viewer
+        // MODELS
 
-        // addViewerIfNotExists
+        //  TODO(tj): if not exists?
+        addViewerIfNotExists: viewerData => {
+            const viewerId = `viewer#${state.lastViewerId++}`
+            if (viewerData.type === 'CodeEditor') {
+                state.modelReferences.increment(viewerData.resource)
+            }
+            let viewComponent: ExtensionViewer
+            switch (viewerData.type) {
+                case 'CodeEditor': {
+                    const textDocument = getTextDocument(viewerData.resource)
+                    viewComponent = new ExtensionCodeEditor({ ...viewerData, viewerId }, textDocument)
+                    break
+                }
+
+                case 'DirectoryViewer': {
+                    viewComponent = new ExtensionDirectoryViewer({ ...viewerData, viewerId })
+                    break
+                }
+            }
+
+            state.viewComponents.set(viewerId, viewComponent)
+            if (viewerData.isActive) {
+                activeViewComponentChanges.next(viewComponent)
+            }
+            return { viewerId }
+        },
         // removeViewer
-        // getActiveCodeEditorPosition (piped off activeViewComponentChanges)
+        removeViewer: ({ viewerId }) => {
+            const viewer = getViewer(viewerId)
+            state.viewComponents.delete(viewerId)
+            // Check if this was the active viewer
+            if (activeViewComponentChanges.value?.viewerId === viewerId) {
+                activeViewComponentChanges.next(undefined)
+            }
+            if (viewer.type === 'CodeEditor' && state.modelReferences.decrement(viewer.resource)) {
+                removeTextDocument(viewer.resource)
+            }
+        },
+
         // setEditorSelections
         // getDecorations
         // addTextDocumentIfNotExists
+
+        // TODO(tj): for panel view location provider arguments
+        getActiveCodeEditorPosition: () =>
+            proxySubscribable(
+                activeViewComponentChanges.pipe(
+                    map(activeViewer => {
+                        if (activeViewer?.type !== 'CodeEditor') {
+                            return null
+                        }
+                        const sel = activeViewer.selections[0]
+                        if (!sel) {
+                            return null
+                        }
+                        // TODO(sqs): Return null for empty selections (but currently all selected tokens are treated as an empty
+                        // selection at the beginning of the token, so this would break a lot of things, so we only do this for empty
+                        // selections when the start character is -1). HACK(sqs): Character === -1 means that the whole line is
+                        // selected (this is a bug in the caller, but it is useful here).
+                        const isEmpty =
+                            sel.start.line === sel.end.line &&
+                            sel.start.character === sel.end.character &&
+                            sel.start.character === -1
+                        if (isEmpty) {
+                            return null
+                        }
+                        return {
+                            textDocument: { uri: activeViewer.resource },
+                            position: sel.start,
+                        }
+                    })
+                )
+            ),
 
         // Context data + Contributions
         updateContext,
@@ -303,9 +432,15 @@ export const initNewExtensionAPI = (
     }
 
     // Workspace
-    const workspace: PartialWorkspaceNamespace = {
+    const workspace: typeof sourcegraph['workspace'] = {
         get textDocuments() {
             return [...state.textDocuments.values()]
+        },
+        get roots() {
+            return state.roots
+        },
+        get versionContext() {
+            return state.versionContext
         },
         onDidOpenTextDocument: state.openedTextDocuments.asObservable(),
         openedTextDocuments: state.openedTextDocuments.asObservable(),
