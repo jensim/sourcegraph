@@ -261,6 +261,8 @@ func (s *indexedSearchRequest) doSearch(ctx context.Context, c chan<- indexedSea
 	}
 	sort.Sort(types.RepoNames(repos))
 
+	sentEvent := false
+
 	for event := range events {
 		err := event.err
 
@@ -280,6 +282,7 @@ func (s *indexedSearchRequest) doSearch(ctx context.Context, c chan<- indexedSea
 			timedout = repos
 		}
 
+		sentEvent = true
 		c <- indexedSearchEvent{
 			common: searchResultsCommon{
 				limitHit: event.limitHit,
@@ -290,6 +293,16 @@ func (s *indexedSearchRequest) doSearch(ctx context.Context, c chan<- indexedSea
 			},
 			results: event.fm,
 			err:     nil,
+		}
+	}
+
+	// send an event containing common if we have not communicated yet.
+	if !sentEvent {
+		c <- indexedSearchEvent{
+			common: searchResultsCommon{
+				searched: repos,
+				indexed:  repos,
+			},
 		}
 	}
 }
@@ -436,129 +449,161 @@ func zoektSearch(ctx context.Context, args *search.TextParameters, repos *indexe
 		defer cancel()
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+
+	// Start event stream
 	t0 := time.Now()
-	resp, err := args.Zoekt.Client.Search(ctx, finalQuery, &searchOpts)
-	if err != nil {
-		c <- zoektSearchStreamEvent{
-			err: err,
-		}
-		return
-	}
-	if resp.FileCount == 0 && resp.MatchCount == 0 && since(t0) >= searchOpts.MaxWallTime {
-		c <- zoektSearchStreamEvent{
-			err: errNoResultsInTimeout,
-		}
-		return
-	}
-	limitHit := resp.FilesSkipped+resp.ShardsSkipped > 0
+	events := args.Zoekt.Client.StreamSearch(ctx, finalQuery, &searchOpts)
 
-	if len(resp.Files) == 0 {
-		c <- zoektSearchStreamEvent{
-			limitHit: limitHit,
+	// Ensure we always drain events
+	defer func() {
+		cancel()
+		for range events {
 		}
-		return
-	}
+	}()
 
-	maxLineMatches := 25 + k
-	maxLineFragmentMatches := 3 + k
+	var stats zoekt.Stats
+	limitRemaining := int(args.PatternInfo.FileMatchLimit)
+	limitHit := false
+	partial := make(map[api.RepoID]struct{})
 
-	var getRepoInputRev func(file *zoekt.FileMatch) (repo *types.RepoName, revs []string, ok bool)
-
-	if args.Mode == search.ZoektGlobalSearch {
-		m := map[string]*search.RepositoryRevisions{}
-		for _, file := range resp.Files {
-			m[file.Repository] = nil
-		}
-		repos, err := getRepos(ctx, args.RepoPromise)
-		if err != nil {
+	for event := range events {
+		if event.Error != nil {
 			c <- zoektSearchStreamEvent{
 				err: err,
 			}
 			return
 		}
 
-		for _, repo := range repos {
-			if _, ok := m[string(repo.Repo.Name)]; !ok {
-				continue
-			}
-			m[string(repo.Repo.Name)] = repo
-		}
-		getRepoInputRev = func(file *zoekt.FileMatch) (repo *types.RepoName, revs []string, ok bool) {
-			repoRev := m[file.Repository]
-			if repoRev == nil {
-				return nil, nil, false
-			}
-			return repoRev.Repo, repoRev.RevSpecs(), true
-		}
-	} else {
-		getRepoInputRev = func(file *zoekt.FileMatch) (repo *types.RepoName, revs []string, ok bool) {
-			repo, inputRevs := repos.GetRepoInputRev(file)
-			return repo, inputRevs, true
-		}
-	}
+		files := event.SearchResult.Files
+		stats.Add(event.SearchResult.Stats)
+		limitRemaining -= len(event.SearchResult.Files)
+		limitHit = limitHit || (stats.FilesSkipped+stats.ShardsSkipped > 0)
 
-	limitHit, files, partial := zoektLimitMatches(limitHit, int(args.PatternInfo.FileMatchLimit), resp.Files, getRepoInputRev)
-	resp.Files = files
-
-	matches := make([]*FileMatchResolver, 0, len(resp.Files))
-	repoResolvers := make(RepositoryResolverCache)
-	for _, file := range resp.Files {
-		fileLimitHit := false
-		if len(file.LineMatches) > maxLineMatches {
-			file.LineMatches = file.LineMatches[:maxLineMatches]
-			fileLimitHit = true
-			limitHit = true
-		}
-		repo, inputRevs, ok := getRepoInputRev(&file)
-		if !ok {
+		if len(files) == 0 {
+			c <- zoektSearchStreamEvent{
+				limitHit: limitHit,
+				partial:  partial,
+			}
 			continue
 		}
-		repoResolver := repoResolvers[repo.Name]
-		if repoResolver == nil {
-			repoResolver = &RepositoryResolver{innerRepo: repo.ToRepo()}
-			repoResolvers[repo.Name] = repoResolver
-		}
 
-		var lines []*lineMatch
-		var matchCount int
-		if typ != symbolRequest {
-			lines, matchCount = zoektFileMatchToLineMatches(maxLineFragmentMatches, &file)
-		}
+		maxLineMatches := 25 + k
+		maxLineFragmentMatches := 3 + k
 
-		for _, inputRev := range inputRevs {
-			inputRev := inputRev // copy so we can take the pointer
+		var getRepoInputRev func(file *zoekt.FileMatch) (repo *types.RepoName, revs []string, ok bool)
 
-			var symbols []*searchSymbolResult
-			if typ == symbolRequest {
-				symbols = zoektFileMatchToSymbolResults(repoResolver, inputRev, &file)
+		if args.Mode == search.ZoektGlobalSearch {
+			m := map[string]*search.RepositoryRevisions{}
+			for _, file := range files {
+				m[file.Repository] = nil
+			}
+			repos, err := getRepos(ctx, args.RepoPromise)
+			if err != nil {
+				c <- zoektSearchStreamEvent{
+					err: err,
+				}
+				return
 			}
 
-			matches = append(matches, &FileMatchResolver{
-				JPath:        file.FileName,
-				JLineMatches: lines,
-				JLimitHit:    fileLimitHit,
-				MatchCount:   matchCount, // We do not use resp.MatchCount because it counts the number of lines matched, not the number of fragments.
-				uri:          fileMatchURI(repo.Name, inputRev, file.FileName),
-				symbols:      symbols,
-				Repo:         repoResolver,
-				CommitID:     api.CommitID(file.Version),
-				InputRev:     &inputRev,
-			})
+			for _, repo := range repos {
+				if _, ok := m[string(repo.Repo.Name)]; !ok {
+					continue
+				}
+				m[string(repo.Repo.Name)] = repo
+			}
+			getRepoInputRev = func(file *zoekt.FileMatch) (repo *types.RepoName, revs []string, ok bool) {
+				repoRev := m[file.Repository]
+				if repoRev == nil {
+					return nil, nil, false
+				}
+				return repoRev.Repo, repoRev.RevSpecs(), true
+			}
+		} else {
+			getRepoInputRev = func(file *zoekt.FileMatch) (repo *types.RepoName, revs []string, ok bool) {
+				repo, inputRevs := repos.GetRepoInputRev(file)
+				return repo, inputRevs, true
+			}
+		}
+
+		limitHit, files = zoektLimitMatches(limitHit, limitRemaining, files, partial, getRepoInputRev)
+
+		if len(files) == 0 {
+			continue
+		}
+
+		matches := make([]*FileMatchResolver, 0, len(files))
+		repoResolvers := make(RepositoryResolverCache)
+		for _, file := range files {
+			fileLimitHit := false
+			if len(file.LineMatches) > maxLineMatches {
+				file.LineMatches = file.LineMatches[:maxLineMatches]
+				fileLimitHit = true
+				limitHit = true
+			}
+			repo, inputRevs, ok := getRepoInputRev(&file)
+			if !ok {
+				continue
+			}
+			repoResolver := repoResolvers[repo.Name]
+			if repoResolver == nil {
+				repoResolver = &RepositoryResolver{innerRepo: repo.ToRepo()}
+				repoResolvers[repo.Name] = repoResolver
+			}
+
+			var lines []*lineMatch
+			var matchCount int
+			if typ != symbolRequest {
+				lines, matchCount = zoektFileMatchToLineMatches(maxLineFragmentMatches, &file)
+			}
+
+			for _, inputRev := range inputRevs {
+				inputRev := inputRev // copy so we can take the pointer
+
+				var symbols []*searchSymbolResult
+				if typ == symbolRequest {
+					symbols = zoektFileMatchToSymbolResults(repoResolver, inputRev, &file)
+				}
+
+				matches = append(matches, &FileMatchResolver{
+					JPath:        file.FileName,
+					JLineMatches: lines,
+					JLimitHit:    fileLimitHit,
+					MatchCount:   matchCount, // We do not use resp.MatchCount because it counts the number of lines matched, not the number of fragments.
+					uri:          fileMatchURI(repo.Name, inputRev, file.FileName),
+					symbols:      symbols,
+					Repo:         repoResolver,
+					CommitID:     api.CommitID(file.Version),
+					InputRev:     &inputRev,
+				})
+			}
+		}
+
+		c <- zoektSearchStreamEvent{
+			fm:       matches,
+			limitHit: limitHit,
+			partial:  partial,
 		}
 	}
 
-	c <- zoektSearchStreamEvent{
-		fm:       matches,
-		limitHit: limitHit,
-		partial:  partial,
+	if stats.FileCount == 0 && stats.MatchCount == 0 && since(t0) >= searchOpts.MaxWallTime {
+		c <- zoektSearchStreamEvent{
+			err: errNoResultsInTimeout,
+		}
+		return
 	}
+
+	// c <- zoektSearchStreamEvent{
+	// 	limitHit: limitHit,
+	// 	partial:  partial,
+	// }
 }
 
 // zoektLimitMatches is the logic which limits files based on
 // limit. Additionally it calculates the set of repos with partial
 // results. This information is not returned by zoekt, so if zoekt indicates a
 // limit has been hit, we include all repos in partial.
-func zoektLimitMatches(limitHit bool, limit int, files []zoekt.FileMatch, getRepoInputRev func(file *zoekt.FileMatch) (repo *types.RepoName, revs []string, ok bool)) (bool, []zoekt.FileMatch, map[api.RepoID]struct{}) {
+func zoektLimitMatches(limitHit bool, limit int, files []zoekt.FileMatch, partial map[api.RepoID]struct{}, getRepoInputRev func(file *zoekt.FileMatch) (repo *types.RepoName, revs []string, ok bool)) (bool, []zoekt.FileMatch) {
 	var resultFiles []zoekt.FileMatch
 	var partialFiles []zoekt.FileMatch
 
@@ -576,10 +621,9 @@ func zoektLimitMatches(limitHit bool, limit int, files []zoekt.FileMatch, getRep
 	}
 
 	if len(partialFiles) == 0 {
-		return limitHit, resultFiles, nil
+		return limitHit, resultFiles
 	}
 
-	partial := make(map[api.RepoID]struct{})
 	last := ""
 	for _, file := range partialFiles {
 		// PERF: skip lookup if it is the same repo as the last result
@@ -593,7 +637,7 @@ func zoektLimitMatches(limitHit bool, limit int, files []zoekt.FileMatch, getRep
 		}
 	}
 
-	return limitHit, resultFiles, partial
+	return limitHit, resultFiles
 }
 
 func zoektFileMatchToLineMatches(maxLineFragmentMatches int, file *zoekt.FileMatch) ([]*lineMatch, int) {

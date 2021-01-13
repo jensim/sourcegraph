@@ -319,6 +319,9 @@ func TestIndexedSearch(t *testing.T) {
 				gotFm = append(gotFm, event.results...)
 			}
 
+			if len(gotCommon.partial) == 0 {
+				gotCommon.partial = nil
+			}
 			if diff := cmp.Diff(&tt.wantCommon, &gotCommon, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("common mismatch (-want +got):\n%s", diff)
 			}
