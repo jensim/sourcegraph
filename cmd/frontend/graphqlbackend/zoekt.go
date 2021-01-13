@@ -381,7 +381,7 @@ func zoektSearchStream(ctx context.Context, args *search.TextParameters, repos *
 	c := make(chan zoektSearchStreamEvent)
 	go func() {
 		defer close(c)
-		_, _, _, _ = zoektSearch(ctx, args, repos, typ, since, c)
+		zoektSearch(ctx, args, repos, typ, since, c)
 	}()
 
 	return c
@@ -392,28 +392,20 @@ func zoektSearchStream(ctx context.Context, args *search.TextParameters, repos *
 // Timeouts are reported through the context, and as a special case errNoResultsInTimeout
 // is returned if no results are found in the given timeout (instead of the more common
 // case of finding partial or full results in the given timeout).
-func zoektSearch(ctx context.Context, args *search.TextParameters, repos *indexedRepoRevs, typ indexedRequestType, since func(t time.Time) time.Duration, c chan<- zoektSearchStreamEvent) (fm []*FileMatchResolver, limitHit bool, partial map[api.RepoID]struct{}, err error) {
-	defer func() {
-		if c != nil {
-			c <- zoektSearchStreamEvent{
-				fm:       fm,
-				limitHit: limitHit,
-				partial:  partial,
-				err:      err,
-			}
-		}
-	}()
-
+func zoektSearch(ctx context.Context, args *search.TextParameters, repos *indexedRepoRevs, typ indexedRequestType, since func(t time.Time) time.Duration, c chan<- zoektSearchStreamEvent) {
 	if args == nil {
-		return nil, false, nil, nil
+		return
 	}
 	if len(repos.repoRevs) == 0 && args.Mode != search.ZoektGlobalSearch {
-		return nil, false, nil, nil
+		return
 	}
 
 	queryExceptRepos, err := queryToZoektQuery(args.PatternInfo, typ)
 	if err != nil {
-		return nil, false, nil, err
+		c <- zoektSearchStreamEvent{
+			err: err,
+		}
+		return
 	}
 	// Performance optimization: For queries without repo: filters, it is not
 	// necessary to send the list of all repoBranches to zoekt. Zoekt can simply
@@ -447,15 +439,24 @@ func zoektSearch(ctx context.Context, args *search.TextParameters, repos *indexe
 	t0 := time.Now()
 	resp, err := args.Zoekt.Client.Search(ctx, finalQuery, &searchOpts)
 	if err != nil {
-		return nil, false, nil, err
+		c <- zoektSearchStreamEvent{
+			err: err,
+		}
+		return
 	}
 	if resp.FileCount == 0 && resp.MatchCount == 0 && since(t0) >= searchOpts.MaxWallTime {
-		return nil, false, nil, errNoResultsInTimeout
+		c <- zoektSearchStreamEvent{
+			err: errNoResultsInTimeout,
+		}
+		return
 	}
-	limitHit = resp.FilesSkipped+resp.ShardsSkipped > 0
+	limitHit := resp.FilesSkipped+resp.ShardsSkipped > 0
 
 	if len(resp.Files) == 0 {
-		return nil, false, nil, nil
+		c <- zoektSearchStreamEvent{
+			limitHit: limitHit,
+		}
+		return
 	}
 
 	maxLineMatches := 25 + k
@@ -470,7 +471,10 @@ func zoektSearch(ctx context.Context, args *search.TextParameters, repos *indexe
 		}
 		repos, err := getRepos(ctx, args.RepoPromise)
 		if err != nil {
-			return nil, false, nil, err
+			c <- zoektSearchStreamEvent{
+				err: err,
+			}
+			return
 		}
 
 		for _, repo := range repos {
@@ -543,7 +547,11 @@ func zoektSearch(ctx context.Context, args *search.TextParameters, repos *indexe
 		}
 	}
 
-	return matches, limitHit, partial, nil
+	c <- zoektSearchStreamEvent{
+		fm:       matches,
+		limitHit: limitHit,
+		partial:  partial,
+	}
 }
 
 // zoektLimitMatches is the logic which limits files based on
