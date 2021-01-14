@@ -510,7 +510,6 @@ export const initNewExtensionAPI = (
             return state.activeViewComponentChanges.value
         },
         activeViewComponentChanges: state.activeViewComponentChanges.asObservable(),
-        // TODO(tj): flatten notification api
         showNotification: (message, type) => {
             state.notifications.next({ message, type })
         },
@@ -527,8 +526,12 @@ export const initNewExtensionAPI = (
         },
 
         showProgress: options => createProgressReporter(options),
-        showMessage: () => {},
-        showInputBox: () => {},
+        showMessage: () => {
+            // needs mainthread api counterpart; no need for any extension host state
+        },
+        showInputBox: () => {
+            // needs mainthread api counterpart; no need for any extension host state
+        },
     }
 
     const app: Pick<typeof sourcegraph['app'], 'activeWindow' | 'activeWindowChanges' | 'windows'> = {

@@ -53,6 +53,7 @@ export function registerBuiltinClientCommands(
             command: 'executeLocationProvider',
             run: (id: string, uri: string, position: Position) =>
                 concat(
+                    // TODO(tj): extension host location provider
                     textDocumentLocations.getLocations(id, { textDocument: { uri }, position }),
                     // Concat with [] to avoid undefined promise value when the getLocation observable completes
                     // without emitting. See https://github.com/ReactiveX/rxjs/issues/1736.
