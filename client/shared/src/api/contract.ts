@@ -68,28 +68,6 @@ export interface FlatExtensionHostAPI {
      */
     addTextDocumentIfNotExists: (textDocumentData: TextDocumentData) => void
 
-    /**
-     * Returns the {@link PartialModel} for the given uri.
-     *
-     */
-    getPartialModel(uri: string): PartialModel
-
-    /**
-     * Updates a model's text content.
-     *
-     * @param uri The URI of the model whose content to update.
-     * @param text The new text content (which will overwrite the model's previous content).
-     * @throws if the model does not exist.
-     */
-    updateModel(uri: string, text: string): void
-
-    /**
-     * Removes a model.
-     *
-     * @param uri The URI of the model to remove.
-     */
-    removeModel(uri: string): void
-
     // VIEWERS
 
     // TODO(tj): for panel view location provider arguments
@@ -98,7 +76,7 @@ export interface FlatExtensionHostAPI {
     /**
      * TODO(tj)
      */
-    getDecorations: (viewerId: ViewerId) => ProxySubscribable<clientType.TextDocumentDecoration[]>
+    getTextDecorations: (viewerId: ViewerId) => ProxySubscribable<clientType.TextDocumentDecoration[]>
 
     /**
      * Add a viewer.
@@ -128,6 +106,14 @@ export interface FlatExtensionHostAPI {
     removeViewer(viewer: ViewerId): void
 
     // getDecorations
+
+    // NOTIFICATIONS
+
+    // notifications (sub of messages and progresses)
+
+    // showMessageRequests
+
+    // showInputs
 }
 
 /**

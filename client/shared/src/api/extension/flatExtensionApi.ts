@@ -1,7 +1,7 @@
 import { SettingsCascade } from '../../settings/settings'
 import { Remote, proxy } from 'comlink'
 import * as sourcegraph from 'sourcegraph'
-import { BehaviorSubject, Subject, of, Observable, from, concat, EMPTY } from 'rxjs'
+import { BehaviorSubject, Subject, of, Observable, from, concat, EMPTY, ReplaySubject } from 'rxjs'
 import { FlatExtensionHostAPI, MainThreadAPI } from '../contract'
 import { syncSubscription } from '../util'
 import { switchMap, mergeMap, map, defaultIfEmpty, catchError, distinctUntilChanged } from 'rxjs/operators'
@@ -22,10 +22,11 @@ import { InitData } from './extensionHost'
 import { ExtensionDocument } from './api/textDocument'
 import { ReferenceCounter } from '../../util/ReferenceCounter'
 import { ExtensionCodeEditor } from './api/codeEditor'
-import { TextModelUpdate } from '../client/services/modelService'
 import { ExtensionViewer, Viewer, ViewerId } from '../viewerTypes'
 import { ExtensionDirectoryViewer } from './api/directoryViewer'
-import { ExtensionWindow } from './api/windows'
+import { Notification } from '../../notifications/notification'
+import { NotificationType } from '../client/services/notifications'
+import { asError } from '../../util/errors'
 
 /**
  * Holds the entire state exposed to the extension host
@@ -64,9 +65,9 @@ export interface ExtensionHostState {
 
     /** Mutable map of viewer ID to viewer. */
     viewComponents: Map<string, ExtensionViewer> // TODO(tj): ext dir viewer
-    // Window TODO(tj): flatten window methods, window class need not exist!
-    window: ExtensionWindow
     activeViewComponentChanges: BehaviorSubject<ExtensionViewer | undefined>
+
+    notifications: ReplaySubject<Notification>
 }
 
 export interface RegisteredProvider<T> {
@@ -173,6 +174,9 @@ export const initNewExtensionAPI = (
 
         // TODO: flattened window methods
         activeViewComponentChanges: new BehaviorSubject<ExtensionViewer | undefined>(undefined),
+
+        // replay subject so we don't lose notifications in case
+        notifications: new ReplaySubject<Notification>(7),
     }
 
     // TODO(tj): document these 'changes' to differentiate them from state. possibly
@@ -187,17 +191,6 @@ export const initNewExtensionAPI = (
     const rootChanges = new Subject<void>()
 
     const versionContextChanges = new Subject<string | undefined>()
-
-    // TODO(tj): document helpers
-
-    // TODO(tj): modelUpdates -> add to textDocuments (replaces ExtensionDocuments)
-    const modelUpdates = new Subject<TextModelUpdate[]>()
-
-    // TODO(tj): viewerUpdates -> add to viewComponents (replaces ExtensionWindows)
-
-    // getTextDocument
-    // getViewer
-    // removeTextDocument
 
     // STATE MANIPULATION HELPERS
     // TODO(tj): explain. you can directly manipulate extension host state, but this is where
@@ -387,7 +380,7 @@ export const initNewExtensionAPI = (
             assertViewerType(viewer, 'CodeEditor')
             viewer.update({ selections })
         },
-        getDecorations: ({ viewerId }) => {
+        getTextDecorations: ({ viewerId }) => {
             const viewer = getViewer(viewerId)
             assertViewerType(viewer, 'CodeEditor')
             return proxySubscribable(viewer.mergedDecorations)
@@ -472,6 +465,41 @@ export const initNewExtensionAPI = (
         versionContextChanges: versionContextChanges.asObservable(),
     }
 
+    const createProgressReporter = async (
+        options: sourcegraph.ProgressOptions
+        // `showProgress` returned a promise when progress reporters were created
+        // in the main thread. continue to return promise for backward compatibility
+        // eslint-disable-next-line @typescript-eslint/require-await
+    ): Promise<sourcegraph.ProgressReporter> => {
+        // There's no guarantee that UI consumers have subscribed to the progress observable
+        // by the time that an extension reports progress, so replay the latest report on subscription.
+        const progressSubject = new ReplaySubject<sourcegraph.Progress>(1)
+
+        state.notifications.next({
+            message: options.title,
+            progress: progressSubject.asObservable(),
+            type: sourcegraph.NotificationType.Log,
+        })
+
+        // return ProgressReporter, which exposes a subset of Subject methods to extensions
+        return {
+            next: (progress: sourcegraph.Progress) => {
+                progressSubject.next(progress)
+            },
+            error: (value: any) => {
+                const error = asError(value)
+                progressSubject.error({
+                    message: error.message,
+                    name: error.name,
+                    stack: error.stack,
+                })
+            },
+            complete: () => {
+                progressSubject.complete()
+            },
+        }
+    }
+
     // App
     const window: sourcegraph.Window = {
         get visibleViewComponents(): sourcegraph.ViewComponent[] {
@@ -483,15 +511,28 @@ export const initNewExtensionAPI = (
         },
         activeViewComponentChanges: state.activeViewComponentChanges.asObservable(),
         // TODO(tj): flatten notification api
-        showNotification: () => {},
-        withProgress: () => {},
-        showProgress: () => {},
+        showNotification: (message, type) => {
+            state.notifications.next({ message, type })
+        },
+        withProgress: async (options, task) => {
+            const reporter = await createProgressReporter(options)
+            try {
+                const result = task(reporter)
+                reporter.complete()
+                return await result
+            } catch (error) {
+                reporter.error(error)
+                throw error
+            }
+        },
+
+        showProgress: options => createProgressReporter(options),
         showMessage: () => {},
         showInputBox: () => {},
     }
 
     const app: Pick<typeof sourcegraph['app'], 'activeWindow' | 'activeWindowChanges' | 'windows'> = {
-        // deprecated
+        // deprecated, add simple window getter
         get activeWindow() {
             return window
         },

@@ -102,6 +102,8 @@ export function createController(context: PlatformContext): Controller {
             notifications.next({ message: title, progress, type: NotificationType.Log })
         })
     )
+
+    // TODO: Platform-specific modals (e.g. subscribe to `showInputs` in `<Notifications>` for webapp)
     subscriptions.add(
         services.notifications.showMessageRequests.subscribe(({ message, actions, resolve }) => {
             if (!actions || actions.length === 0) {

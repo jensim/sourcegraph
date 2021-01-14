@@ -32,6 +32,7 @@ export class Notifications extends React.PureComponent<Props, State> {
 
     public componentDidMount(): void {
         this.subscriptions.add(
+            // TODO(tj): subscribe directly to extension host?
             this.props.extensionsController.notifications
                 .pipe(map(notification => ({ ...notification, id: uniqueId('n') })))
                 .subscribe(notification => {

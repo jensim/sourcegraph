@@ -62,6 +62,8 @@ export class ClientWindows implements ClientWindowsAPI {
     }
 
     public $showProgress(options: sourcegraph.ProgressOptions): sourcegraph.ProgressReporter & ProxyMarked {
-        return proxy(this.createProgressReporter(options))
+        const progress = this.createProgressReporter(options)
+        console.log({ progress })
+        return proxy(progress)
     }
 }
