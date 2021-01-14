@@ -648,6 +648,10 @@ func zoektFileMatchToSymbolResults(repo *RepositoryResolver, inputRev string, fi
 					ParentKind: m.SymbolInfo.ParentKind,
 					Path:       file.FileName,
 					Line:       l.LineNumber,
+					// symbolRange requires a Pattern /^...$/ containing the line of the symbol to compute the symbol's offsets.
+					// This Pattern is directly accessible on the unindexed code path. But on the indexed code path, we need to
+					// populate it, or we will always compute a 0 offset, which messes up API use (e.g., highlighting).
+					Pattern: fmt.Sprintf("/^%s$/", string(l.Line)),
 				},
 				lang:    lang,
 				baseURI: baseURI,
